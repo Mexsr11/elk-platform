@@ -1,0 +1,18 @@
+{
+  "_comment": "Filebeat 专用角色 —— 最小权限。只给写入和必要的元数据权限，不给删除、查询其他索引、集群管理。",
+  "cluster": [
+    "monitor",
+    "manage_index_templates",
+    "manage_ilm"
+  ],
+  "indices": [
+    {
+      "names": ["supplier-logs*", ".ds-supplier-logs*"],
+      "privileges": [
+        "create_doc",
+        "auto_configure",
+        "view_index_metadata"
+      ]
+    }
+  ]
+}

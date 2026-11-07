@@ -1,0 +1,117 @@
+#单机三节点沙盒，用于验证配置
+#特点：1.bridge网络，容器之间用服务器互相解析；2.关闭security，只验证集群逻辑3.堆压到512m,适合单机内存；4.端口只绑定127.0.0.1，避免docker绕过防火墙暴露公网
+services:
+  es01:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    container_name: es01
+    environment:
+
+      - node.name=es01
+      - cluster.name=${CLUSTER_NAME}
+      - discovery.seed_hosts=es02,es03
+      - cluster.initial_master_nodes=es01,es02,es03
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms384m -Xmx384m"
+      - TZ=Asia/Shanghai
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - es01data:/usr/share/elasticsearch/data
+    ports:
+
+      - "127.0.0.1:9200:9200"
+    networks:
+      - esnet
+    healthcheck:
+      test: ["CMD-SHELL","curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 90s
+    restart: unless-stopped
+  es02:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    container_name: es02
+    environment:
+      - node.name=es02
+      - cluster.name=${CLUSTER_NAME}
+      - discovery.seed_hosts=es01,es03
+      - cluster.initial_master_nodes=es01,es02,es03
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms384m -Xmx384m"
+      - TZ=Asia/Shanghai
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - es02data:/usr/share/elasticsearch/data
+    ports:
+      - "127.0.0.1:9201:9200"
+    networks:
+      - esnet
+    restart: unless-stopped
+
+  es03:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    container_name: es03
+    environment:
+      - node.name=es03
+      - cluster.name=${CLUSTER_NAME}
+      - discovery.seed_hosts=es01,es02
+      - cluster.initial_master_nodes=es01,es02,es03
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms384m -Xmx384m"
+      - TZ=Asia/Shanghai
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - es03data:/usr/share/elasticsearch/data
+    ports:
+      - "127.0.0.1:9202:9200"
+    networks:
+      - esnet
+    restart: unless-stopped
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${STACK_VERSION}
+    container_name: kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=["http://es01:9200","http://es02:9200","http://es03:9200"]
+      - I18N_LOCALE=zh-CN
+      - TZ=Asia/Shanghai
+    ports:
+      - "127.0.0.1:5601:5601"
+    networks:
+      - esnet
+    depends_on:
+      es01:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  es01data: {}
+  es02data: {}
+  es03data: {}
+
+networks:
+  esnet:
+    driver: bridge

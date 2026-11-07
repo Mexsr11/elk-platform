@@ -1,0 +1,23 @@
+# =============================================================================
+# 证书签发清单 —— elasticsearch-certutil cert 的输入
+#
+# 三台节点共用一个 CA，但每台有独立证书。
+# SAN（Subject Alternative Name）必须包含所有会被访问到的地址，
+# 否则 TLS 握手时会报 "No subject alternative names matching IP address x.x.x.x"。
+#
+# 为什么每个节点都要写 127.0.0.1 和 localhost：
+#   健康检查、本地排障、docker exec 里执行的 curl 可能走回环地址，
+#   证书里没有这一项就会校验失败。
+# =============================================================================
+instances:
+  - name: "es01"
+    ip: ["192.168.132.11", "127.0.0.1"]
+    dns: ["es01", "localhost"]
+
+  - name: "es02"
+    ip: ["192.168.132.12", "127.0.0.1"]
+    dns: ["es02", "localhost"]
+
+  - name: "es03"
+    ip: ["192.168.132.13", "127.0.0.1"]
+    dns: ["es03", "localhost"]

@@ -1,0 +1,112 @@
+# =============================================================================
+# Filebeat 8.19 —— 采集 Spring Boot 应用日志
+#
+# 用途：Lab 5，把 /var/log/app/*.log 采集到三节点 ES 集群
+# 部署：容器 + network_mode: host（与 ES 节点同机）
+#
+# 版本必须与 ES 一致：8.19.0 的 Filebeat 连 8.19.0 的 ES。
+# 跨大版本会握手失败（报 unsupported version）。
+#
+# 【重要】分层设计：
+#   Filebeat 侧：只做采集、多行合并、加元数据
+#   ES 侧     ：用 ingest pipeline 做结构化解析（grok）
+#
+# 为什么不把 grok 写在 Filebeat 里？因为 Filebeat 的 processors 不支持 grok，
+# 只有 dissect。dissect 按分隔符切，处理不了 Spring Boot 日志里
+# 「级别前面有两个空格」这种不定空格格式。grok 是 Logstash 和 ES ingest
+# pipeline 的能力。
+# =============================================================================
+
+filebeat.inputs:
+  - type: filestream                 # 8.x 推荐，替代老的 log input
+    id: supplier-mgmt-app            # 必填且唯一，registry 靠它区分不同 input
+    enabled: true
+    paths:
+      - /var/log/app/*.log
+
+    # ---------------------------------------------------------------------
+    # 多行合并：Java 堆栈的每一行都不以时间戳开头，
+    # 必须合并回上一条日志，否则一个异常会被拆成 5 条独立事件。
+    # ---------------------------------------------------------------------
+    parsers:
+      - multiline:
+          type: pattern
+          pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}'   # 一条日志的起始特征
+          negate: true        # 取反：不匹配 pattern 的行
+          match: after        # 追加到上一行后面
+          timeout: 5s         # 超过 5 秒没有新行，强制结束这条事件
+
+    # ---------------------------------------------------------------------
+    # 自定义字段
+    # 注意 fields_under_root 保持默认 false —— 字段会放进 fields.app 下面。
+    # 如果设成 true，app 会提到顶层；而 ECS 模板里 service 是 object 类型，
+    # 顶层放一个同名字符串会导致索引模板冲突、写入被拒。
+    # ---------------------------------------------------------------------
+    fields:
+      app: supplier-mgmt
+      env: lab
+
+# =============================================================================
+# Filebeat 侧的 processors
+#
+# 这里只放「Filebeat 原生支持」的轻量处理。
+# 结构化解析（grok）在 ES 的 ingest pipeline 里做，见 output.pipeline。
+# =============================================================================
+processors:
+  # 标记数据来源，方便以后多采集器并存时区分
+  - add_fields:
+      target: ''
+      fields:
+        ingest.via: filebeat
+
+# =============================================================================
+# 输出
+#
+# index：传统索引名，带日期后缀，按天滚动。
+#        （用传统索引而不是 data stream，是因为自定义 index 名时
+#         Filebeat 要求同时配 setup.template，配好即可正常滚动）
+#
+# pipeline：结构化解析在 ES 侧完成。这个 pipeline 必须先用下面的命令创建：
+#   PUT _ingest/pipeline/supplier-mgmt-parse
+# 见手册「步骤 2.5」
+# =============================================================================
+output.elasticsearch:
+  hosts: ["http://192.168.132.11:9200"]
+  index: "supplier-logs-%{+yyyy.MM.dd}"
+  pipeline: "supplier-mgmt-parse"
+
+# =============================================================================
+# 索引模板与 ILM
+#
+# 用自定义 index 名时，这几项必须配，否则 Filebeat 启动时报：
+#   setup.template.name and setup.template.pattern have to be set
+#   if index name is modified
+#
+# ⚠️ pattern 写成 "supplier-logs*"（不带连字符），不要写成 "supplier-logs-*"。
+# 原因：Filebeat 启动时会拿 setup.template.name 本身（即 "supplier-logs"）去
+# 尝试创建 data stream，如果 pattern 是 "supplier-logs-*"，匹配不到这个名字，
+# 就会报错：
+#   no matching index template found for data stream [supplier-logs]
+# 虽然它会重试并最终成功写入，但日志里会留一条 error，掩盖真正的问题。
+#
+# ILM 先关掉——日期后缀已经实现了按天滚动。
+# Lab 7 会改成 ILM 托管，届时把 setup.ilm.enabled 改回 true。
+# =============================================================================
+setup.template.name: "supplier-logs"
+setup.template.pattern: "supplier-logs*"
+setup.ilm.enabled: false
+
+# =============================================================================
+# Filebeat 自己的运行日志（不是被采集的业务日志）
+# 采集出问题，第一个要看的就是这里
+# =============================================================================
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 3
+  permissions: 0644
+
+# 单机实验，关掉 X-Pack 监控上报，省资源
+monitoring.enabled: false

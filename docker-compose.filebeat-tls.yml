@@ -1,0 +1,50 @@
+# =============================================================================
+# Filebeat 采集器（TLS 版）—— Lab 6
+#
+# 与 docker-compose.filebeat.yml 的差别只有三处：
+#   ① 挂载的配置文件从 filebeat.yml 换成 filebeat-tls.yml（https + 账号密码）
+#   ② 多挂一个 ./certs/ca/ca.crt 进去（自签 CA 必须显式信任）
+#   ③ environment 注入 FILEBEAT_PASSWORD（filebeat-tls.yml 里用 ${FILEBEAT_PASSWORD} 引用）
+#
+# 用法（在 es01 的 ~/elk-platform 下）：
+#   docker compose -f docker-compose.filebeat-tls.yml up -d
+#   docker compose -f docker-compose.filebeat-tls.yml logs -f
+#
+# ⚠️ 密码不进配置文件、不进 git，只从 .env 注入容器环境变量
+# =============================================================================
+services:
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:${STACK_VERSION}
+    container_name: filebeat
+
+    # /var/log/app 下的日志属主是应用用户，非 root 读不到
+    user: root
+
+    # host 网络：直接访问 https://192.168.132.11:9200，无需端口映射
+    network_mode: host
+
+    environment:
+      # filebeat-tls.yml 里 output.elasticsearch.password: "${FILEBEAT_PASSWORD}"
+      # 这里注入后由 Filebeat 启动时展开，配置文件本身不含明文
+      - FILEBEAT_PASSWORD=${FILEBEAT_PASSWORD}
+
+    volumes:
+      # ① TLS 版采集配置
+      - ./filebeat-tls.yml:/usr/share/filebeat/filebeat.yml:ro
+
+      # ② 要采集的日志目录（只读）
+      - /var/log/app:/var/log/app:ro
+
+      # ③ CA 证书：只挂 ca.crt，绝不挂 ca.key
+      - ./certs/ca/ca.crt:/usr/share/filebeat/certs/ca.crt:ro
+
+      # ④ registry 持久化：记录每个文件读到第几字节，避免重建后重复采集
+      - filebeat-data:/usr/share/filebeat/data
+
+    # --strict.perms=false：挂载进来的配置属主不是 root:root，跳过权限检查
+    command: ["-e", "--strict.perms=false"]
+
+    restart: unless-stopped
+
+volumes:
+  filebeat-data:

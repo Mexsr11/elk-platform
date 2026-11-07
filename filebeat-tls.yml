@@ -1,0 +1,76 @@
+# =============================================================================
+# Filebeat 8.19 —— 采集 Spring Boot 日志（TLS 版）—— Lab 6
+#
+# 与 filebeat.yml 的差别只有 output 段：
+#   ① http → https
+#   ② 加 username / password（用最小权限账号，不是 elastic）
+#   ③ 加 ssl.certificate_authorities（自签 CA 必须显式信任）
+#
+# 采集逻辑（input / parsers / processors）完全不变，解析仍在 ES 侧 pipeline
+# =============================================================================
+
+filebeat.inputs:
+  - type: filestream
+    id: supplier-mgmt-app
+    enabled: true
+    paths:
+      - /var/log/app/*.log
+    parsers:
+      - multiline:
+          type: pattern
+          pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}'
+          negate: true
+          match: after
+          timeout: 5s
+    fields:
+      app: supplier-mgmt
+      env: lab
+
+processors:
+  - add_fields:
+      target: ''
+      fields:
+        ingest.via: filebeat
+
+# =============================================================================
+# 输出：HTTPS + 基本认证
+#
+# 三个要点：
+#   ① hosts 用 https:// —— 端口还是 9200，协议变了
+#   ② 用 filebeat_writer 账号，不是 elastic！
+#      最小权限原则：采集器只给它 create_doc，拿不到删除和查询别的索引的权限
+#   ③ ssl.certificate_authorities 指向 CA 证书
+#      自签证书不在系统信任链里，不指定会报：
+#      x509: certificate signed by unknown authority
+#
+# ⚠️ 不要为了省事关掉校验（ssl.verification_mode: none）
+#    那等于放弃了 TLS 的一半价值——只能防窃听，防不了中间人
+# =============================================================================
+output.elasticsearch:
+  hosts:
+    - "https://192.168.132.11:9200"
+    - "https://192.168.132.12:9200"
+    - "https://192.168.132.13:9200"
+  username: "filebeat_writer"
+  password: "${FILEBEAT_PASSWORD}"
+  ssl.certificate_authorities: ["/usr/share/filebeat/certs/ca.crt"]
+  index: "supplier-logs-%{+yyyy.MM.dd}"
+  pipeline: "supplier-mgmt-parse"
+
+# =============================================================================
+# 索引模板
+# 开启安全后，Filebeat 装模板也需要权限——所以角色里给了 manage_index_templates
+# =============================================================================
+setup.template.name: "supplier-logs"
+setup.template.pattern: "supplier-logs*"
+setup.ilm.enabled: false
+
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 3
+  permissions: 0644
+
+monitoring.enabled: false

@@ -1,0 +1,77 @@
+# =============================================================================
+# 多主机 ES 节点模板 —— 三台机器共用，差异全在 .env
+#
+# 关键设计：
+#   1. network_mode: host —— 规避容器 IP 跨主机不可路由
+#      （bridge 网络下 ES 会把容器 IP 作为 publish_address 通告，其他节点连不上）
+#   2. network.host 显式绑内网 IP，不使用 0.0.0.0
+#   3. 数据目录用宿主机 /data/elasticsearch，便于备份与容量观测
+#
+# 用法：
+#   ./scripts/gen-env.sh es01 192.168.132.11 "192.168.132.12:9300,192.168.132.13:9300"
+#   docker compose config      # 先校验
+#   docker compose up -d
+# =============================================================================
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    container_name: ${NODE_NAME}
+
+    # host 模式：容器直接使用宿主机网络栈，ES 监听主机内网 IP
+    # 注意：host 模式下不能写 ports 段，会报错
+    network_mode: host
+
+    environment:
+      - node.name=${NODE_NAME}
+      - cluster.name=${CLUSTER_NAME}
+      - node.roles=${NODE_ROLES}
+
+      # 显式绑定内网 IP，绝不用 0.0.0.0
+      - network.host=${NODE_IP}
+      - http.port=${ES_PORT}
+      - transport.port=${ES_TRANSPORT_PORT}
+
+      # 集群发现：只填其他节点的 IP:9300，不要写自己
+      - discovery.seed_hosts=${SEED_HOSTS}
+
+      # 【仅首次引导有效】集群 green 后必须注释掉这一行，
+      # 注意：不能把 .env 里的值设成空 —— ES 拒绝 null 值，会报
+      #   ElasticsearchParseException: null-valued setting found for key [cluster.initial_master_nodes]
+      # 只有当整个集群数据全部丢失、需要重新组建时才取消注释并填入名单
+      # - cluster.initial_master_nodes=${INITIAL_MASTER_NODES}
+
+      # 锁定堆内存，防止被换出导致 GC 停顿
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms${ES_HEAP} -Xmx${ES_HEAP}"
+
+      # 生产模式（非 single-node）必须显式关闭或配置 TLS，Lab 6 会打开
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+
+      - TZ=Asia/Shanghai
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc:
+        soft: 4096
+        hard: 4096
+
+    volumes:
+      # 宿主机路径，不用命名卷：便于 rsync 迁移、快照备份、查看磁盘占用
+      # 属主必须是 uid 1000（容器内 elasticsearch 用户），否则 AccessDeniedException
+      - /data/elasticsearch:/usr/share/elasticsearch/data
+
+    healthcheck:
+      # 用 NODE_IP 而不是 localhost，顺便验证绑定地址正确
+      test: ["CMD-SHELL", "curl -fsS http://${NODE_IP}:9200/_cluster/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 90s
+
+    restart: unless-stopped

@@ -1,0 +1,49 @@
+# =============================================================================
+# Filebeat 采集器 —— Lab 5
+#
+# 用法（在 ~/elk-platform 下）：
+#   docker compose -f docker-compose.filebeat.yml up -d
+#   docker compose -f docker-compose.filebeat.yml logs -f
+#
+# 依赖：同目录下要有 filebeat.yml 和 .env（.env 提供 STACK_VERSION）
+# =============================================================================
+services:
+  filebeat:
+    # 版本跟 ES 严格一致，用 .env 里的 STACK_VERSION
+    image: docker.elastic.co/beats/filebeat:${STACK_VERSION}
+    container_name: filebeat
+
+    # ---------------------------------------------------------------------
+    # user: root 是必需的
+    # /var/log/app 下的日志文件通常属主是应用用户，容器默认的非 root 用户读不到。
+    # 生产上更规范的做法是给容器加 supplementary group 或调整文件权限，
+    # 但单机实验用 root 最省事。
+    # ---------------------------------------------------------------------
+    user: root
+
+    # ---------------------------------------------------------------------
+    # host 网络：容器直接用宿主机的网络栈，
+    # 所以配置里写 http://192.168.132.11:9200 能直接连通，不需要端口映射。
+    # ---------------------------------------------------------------------
+    network_mode: host
+
+    volumes:
+      # ① 配置文件（只读挂载）
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+
+      # ② 要采集的日志目录（只读挂载！千万别给写权限）
+      - /var/log/app:/var/log/app:ro
+
+      # ③ registry 持久化 —— 这一条最容易被忽略
+      # 容器里 /usr/share/filebeat/data/registry 记录「每个文件读到第几字节」。
+      # 不持久化的话，容器一重建就从文件开头重读，导致数据大量重复。
+      - filebeat-data:/usr/share/filebeat/data
+
+    # -e 把日志打到 stderr（docker logs 能直接看）
+    # --strict.perms=false 跳过配置文件权限检查（挂载进来的文件属主不是 root:root）
+    command: ["-e", "--strict.perms=false"]
+
+    restart: unless-stopped
+
+volumes:
+  filebeat-data:

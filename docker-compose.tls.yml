@@ -1,0 +1,115 @@
+# =============================================================================
+# 多主机 ES 节点模板（TLS 版）—— Lab 6
+#
+# 与 docker-compose.yml 的差别只有三处：
+#   ① environment 里加了 10 行 xpack.security 配置
+#   ② volumes 里挂了 ./certs 目录
+#   ③ healthcheck 从 http 改成 https + 基本认证
+#
+# 用法（三台都是同一份文件，差异仍由 .env 提供）：
+#   docker compose -f docker-compose.tls.yml config     # 先校验
+#   docker compose -f docker-compose.tls.yml up -d
+#
+# ⚠️ 证书必须先准备好，见手册步骤 2-4，否则容器起不来（找不到证书文件）
+# =============================================================================
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:${STACK_VERSION}
+    container_name: ${NODE_NAME}
+
+    network_mode: host
+
+    environment:
+      - node.name=${NODE_NAME}
+      - cluster.name=${CLUSTER_NAME}
+      - node.roles=${NODE_ROLES}
+
+      - network.host=${NODE_IP}
+      - http.port=${ES_PORT}
+      - transport.port=${ES_TRANSPORT_PORT}
+
+      - discovery.seed_hosts=${SEED_HOSTS}
+
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms${ES_HEAP} -Xmx${ES_HEAP}"
+
+      - TZ=Asia/Shanghai
+
+      # -----------------------------------------------------------------------
+      # ① 总开关
+      # enrollment 是 8.x 的「自动安全配置」功能（配合 Kibana 一键接入），
+      # 我们手工配证书，关掉它避免它自己又生成一套配置
+      # -----------------------------------------------------------------------
+      - xpack.security.enabled=true
+      - xpack.security.enrollment.enabled=false
+
+      # -----------------------------------------------------------------------
+      # ② transport 层 TLS（节点之间，9300 端口）
+      #
+      # 这一层不开，集群根本组不起来——因为开启 security 后 ES 强制要求
+      # 节点间通信加密，bootstrap check 会直接拒绝启动。
+      #
+      # verification_mode=certificate：只校验证书是否由同一 CA 签发，
+      # 不校验主机名。集群内部用 IP 互连，证书 SAN 里虽有 IP，
+      # 但用 certificate 模式更宽容，避免因多网卡/别名导致握手失败。
+      # -----------------------------------------------------------------------
+      - xpack.security.transport.ssl.enabled=true
+      - xpack.security.transport.ssl.verification_mode=certificate
+      - xpack.security.transport.ssl.certificate_authorities=/usr/share/elasticsearch/config/certs/ca/ca.crt
+      - xpack.security.transport.ssl.certificate=/usr/share/elasticsearch/config/certs/${NODE_NAME}/${NODE_NAME}.crt
+      - xpack.security.transport.ssl.key=/usr/share/elasticsearch/config/certs/${NODE_NAME}/${NODE_NAME}.key
+
+      # -----------------------------------------------------------------------
+      # ③ HTTP 层 TLS（客户端，9200 端口）
+      #
+      # 这一层是给外部客户端用的（curl、Filebeat、Kibana）。
+      # verification_mode 保持默认的 full —— 客户端访问时会校验主机名，
+      # 所以证书的 SAN 必须包含客户端使用的地址。
+      # -----------------------------------------------------------------------
+      - xpack.security.http.ssl.enabled=true
+      - xpack.security.http.ssl.certificate_authorities=/usr/share/elasticsearch/config/certs/ca/ca.crt
+      - xpack.security.http.ssl.certificate=/usr/share/elasticsearch/config/certs/${NODE_NAME}/${NODE_NAME}.crt
+      - xpack.security.http.ssl.key=/usr/share/elasticsearch/config/certs/${NODE_NAME}/${NODE_NAME}.key
+
+      # -----------------------------------------------------------------------
+      # ④ elastic 超级用户的初始密码
+      # 只在第一次初始化时生效（数据目录里没有用户记录时），之后改密码要用 API。
+      # 密码从 .env 读取，不写死在 compose 里。
+      # -----------------------------------------------------------------------
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc:
+        soft: 4096
+        hard: 4096
+
+    volumes:
+      - /data/elasticsearch:/usr/share/elasticsearch/data
+
+      # 证书目录（只读）。注意路径里用 ${NODE_NAME}，三台各自读自己的证书
+      - ./certs:/usr/share/elasticsearch/config/certs:ro
+
+    healthcheck:
+      # 健康检查只验证「9200 在说 TLS 且服务已就绪」，不依赖密码。
+      #
+      # 为什么不用 -u elastic:$ELASTIC_PASSWORD：
+      #   compose 里写 $$ 才能得到字面量 $，但 sh -c 里的 $$ 会被解释成进程号，
+      #   容易踩坑。而且密码明文出现在 docker inspect 里也不好看。
+      #
+      # 401 和 200 都算健康：
+      #   401 = 服务起来了，正在要求认证（正常状态）
+      #   200 = 服务起来了，且这次请求带了凭据（不会发生，但兼容）
+      # 连不上或证书层就崩了，curl 会返回非 0，healthcheck 判失败。
+      test: ["CMD-SHELL", "curl -k -s -o /dev/null -w '%{http_code}' https://${NODE_IP}:9200/ | grep -qE '^(200|401)$'"]
+      interval: 20s
+      timeout: 5s
+      retries: 15
+      start_period: 90s
+
+    restart: unless-stopped

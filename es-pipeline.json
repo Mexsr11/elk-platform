@@ -1,0 +1,12 @@
+{
+  "description": "解析 Spring Boot 日志（Lab 7：补 date 处理器）",
+  "processors": [
+    {"grok": {"field": "message", "ignore_failure": true,
+      "patterns": ["%{TIMESTAMP_ISO8601:spring.timestamp}\\s+%{LOGLEVEL:spring.level}\\s+%{NUMBER:spring.pid}\\s+---\\s+\\[%{DATA:spring.thread}\\]\\s+%{JAVACLASS:spring.logger}\\s*:\\s*%{GREEDYDATA:spring.message}"]}},
+    {"grok": {"field": "message", "ignore_failure": true,
+      "patterns": ["耗时 %{NUMBER:spring.duration_ms:int}ms"]}},
+    {"set": {"field": "spring.slow", "value": true,
+      "if": "ctx.spring != null && ctx.spring.duration_ms != null && ctx.spring.duration_ms >= 300"}},
+    {"date": {"field": "spring.timestamp", "formats": ["yyyy-MM-dd HH:mm:ss.SSS"], "timezone": "Asia/Shanghai", "target_field": "@timestamp", "ignore_failure": true}}
+  ]
+}

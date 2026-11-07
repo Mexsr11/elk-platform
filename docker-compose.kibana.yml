@@ -1,0 +1,69 @@
+# =============================================================================
+# Kibana 8.19 —— Lab 9（TLS + kibana_system 账号版）
+#
+# 只在 es01 上运行。用 bridge 网络 + 端口映射：Kibana 只需要出站访问 ES，
+# 不需要被别的节点访问，绑内网 IP 比 host 网络更可控。
+#
+# 前置（见 Lab9 手册）：
+#   ① es01 内存加到 4 GiB（Kibana 常驻 700MB~1G，2.5G 会和 ES 抢内存）
+#   ② 设置 kibana_system 用户密码，并写进 .env 的 KIBANA_SYSTEM_PASSWORD
+#   ③ certs/ca/ca.crt 已存在
+#
+# 用法：
+#   docker compose -f docker-compose.kibana.yml up -d
+#   docker logs -f kibana | grep -E "Kibana is now available|FATAL"
+#   curl -s -o /dev/null -w "%{http_code}\n" http://192.168.132.11:5601/api/status
+# =============================================================================
+services:
+  kibana:
+    image: docker.elastic.co/kibana/kibana:${STACK_VERSION}
+    container_name: kibana
+
+    environment:
+      # ---------- 连 ES：三节点 + HTTPS + 专用账号 ----------
+      # 用 JSON 数组形式，某个节点挂了会自动切到下一个
+      - ELASTICSEARCH_HOSTS=["https://192.168.132.11:9200","https://192.168.132.12:9200","https://192.168.132.13:9200"]
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_SYSTEM_PASSWORD}
+
+      # ---------- 信任自签 CA ----------
+      - ELASTICSEARCH_SSL_CERTIFICATEAUTHORITIES=/usr/share/kibana/config/certs/ca.crt
+      # certificate：只校验证书链。节点证书 SAN 里有 IP，用 full 也能过，
+      # 但 certificate 更宽容，避免以后换 IP / 加别名时踩 hostname mismatch
+      - ELASTICSEARCH_SSL_VERIFICATIONMODE=certificate
+
+      # ---------- 对外监听 ----------
+      # ⚠️ 容器在 bridge 网络里，必须绑 0.0.0.0；对外只暴露到宿主内网 IP 由 ports 控制
+      # 写成 192.168.132.11 会报 EADDRNOTAVAIL: address not available（容器内没有这个地址）
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=5601
+      - SERVER_PUBLICBASEURL=http://192.168.132.11:5601
+
+      # ---------- 保存对象加密（不设会报 "Encryption key not configured"）----------
+      # 32 位以上随机串；生产环境从密钥管理服务注入，不要提交进 Git
+      - XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY=${KIBANA_ENCRYPTION_KEY}
+
+      # ---------- 体验：中文 + 时区 + 关掉自监控上报 ----------
+      - I18N_LOCALE=zh-CN
+      - TZ=Asia/Shanghai
+      - MONITORING_ENABLED=false
+
+      # ---------- 内存上限：限制 Node 堆，防止撑爆 2.5G 的虚机 ----------
+      - NODE_OPTIONS=--max-old-space-size=512
+
+    ports:
+      # 只映射到内网 IP；公网访问需要 SSH 隧道或反向代理
+      - "192.168.132.11:5601:5601"
+
+    volumes:
+      # 只挂 ca.crt，绝不挂 ca.key
+      - ./certs/ca/ca.crt:/usr/share/kibana/config/certs/ca.crt:ro
+
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:5601/api/status | grep -q 200"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+    restart: unless-stopped
